@@ -24,7 +24,7 @@ void extra_init() {
     pio_cfg.pin_dp = PICO_DEFAULT_PIO_USB_DP_PIN;
     pio_cfg.skip_alarm_pool = true;
     tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
-    add_repeating_timer_us(-1000, manual_sof, NULL, &sof_timer);
+    add_repeating_timer_us(1000, manual_sof, NULL, &sof_timer);
 }
 
 uint32_t get_gpio_valid_pins_mask() {

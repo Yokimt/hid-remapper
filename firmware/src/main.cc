@@ -16,7 +16,7 @@
 #include <pico/platform.h>
 #include <pico/stdio.h>
 #include <pico/unique_id.h>
-
+#include <hardware/clocks.h>
 #include "activity_led.h"
 #include "config.h"
 #include "crc.h"
@@ -330,6 +330,7 @@ uint64_t get_unique_id() {
 }
 
 int main() {
+    set_sys_clock_khz(120000, true);  // PIO-USB 最优时钟
     my_mutexes_init();
     gpio_pins_init();
 #ifdef I2C_ENABLED
