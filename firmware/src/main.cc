@@ -57,6 +57,98 @@ bool set_gpio_dir_pending = false;
 uint16_t prev_adc_state[NADCS] = { 0 };
 #endif
 
+const uint32_t MOUSE_X_USAGE = 0x00010030;
+const uint32_t MOUSE_Y_USAGE = 0x00010031;
+
+extern tusb_desc_device_t desc_device;
+extern char const* string_desc_arr[];
+
+static char mirrored_product_name[32] = { 0 };
+
+static bool find_relative_mouse_dev_addr(uint8_t* dev_addr_out) {
+    bool found = false;
+
+    my_mutex_enter(MutexId::THEIR_USAGES);
+    for (auto const& [interface_id, report_map] : their_usages) {
+        bool has_relative_x = false;
+        bool has_relative_y = false;
+
+        for (auto const& [report_id, usage_map] : report_map) {
+            (void) report_id;
+
+            auto x_it = usage_map.find(MOUSE_X_USAGE);
+            if ((x_it != usage_map.end()) && x_it->second.is_relative) {
+                has_relative_x = true;
+            }
+
+            auto y_it = usage_map.find(MOUSE_Y_USAGE);
+            if ((y_it != usage_map.end()) && y_it->second.is_relative) {
+                has_relative_y = true;
+            }
+
+            if (has_relative_x && has_relative_y) {
+                *dev_addr_out = (uint8_t) (interface_id >> 8);
+                found = true;
+                break;
+            }
+        }
+
+        if (found) {
+            break;
+        }
+    }
+    my_mutex_exit(MutexId::THEIR_USAGES);
+
+    return found;
+}
+static bool mirror_mouse_identity(uint8_t dev_addr) {
+    uint16_t vid = 0;
+    uint16_t pid = 0;
+    if (tuh_vid_pid_get(dev_addr, &vid, &pid)) {
+        desc_device.idVendor = vid;
+        desc_device.idProduct = pid;
+    } else {
+        return false;
+    }
+
+    // 先取设备支持的语言 ID，默认回退到 0x0409
+    uint16_t lang_desc[16] = { 0 };
+    uint16_t language_id = 0x0409;
+    if (tuh_descriptor_get_string_sync(dev_addr, 0, 0, lang_desc, sizeof(lang_desc)) == XFER_RESULT_SUCCESS) {
+        uint8_t lang_len = ((uint8_t*) lang_desc)[0];
+        if (lang_len >= 4) {
+            language_id = lang_desc[1];
+        }
+    }
+
+    uint16_t product_desc_utf16[32] = { 0 };
+    uint8_t res = tuh_descriptor_get_product_string_sync(dev_addr, language_id, product_desc_utf16, sizeof(product_desc_utf16));
+    if ((res != XFER_RESULT_SUCCESS) && (language_id != 0x0409)) {
+        res = tuh_descriptor_get_product_string_sync(dev_addr, 0x0409, product_desc_utf16, sizeof(product_desc_utf16));
+    }
+    if (res != XFER_RESULT_SUCCESS) {
+        return false;
+    }
+
+    uint8_t total_len = ((uint8_t*) product_desc_utf16)[0];
+    if (total_len < 4) {
+        return false;
+    }
+
+    uint8_t chars = (uint8_t) ((total_len - 2) / 2);
+    if (chars > 31) {
+        chars = 31;
+    }
+
+    for (uint8_t i = 0; i < chars; i++) {
+        uint16_t ch = product_desc_utf16[1 + i];
+        mirrored_product_name[i] = (ch >= 0x20 && ch <= 0x7E) ? (char) ch : '_';
+    }
+    mirrored_product_name[chars] = 0;
+
+    string_desc_arr[2] = mirrored_product_name;
+    return true;
+}
 void print_stats_maybe() {
     uint64_t now = time_us_64();
     if (now > next_print) {
@@ -247,6 +339,8 @@ int main() {
     adc_pins_init();
 #endif
     tick_init();
+    bool device_side_connected = false;
+    tud_disconnect();
     load_config(FLASH_CONFIG_IN_MEMORY);
     our_descriptor = &our_descriptors[our_descriptor_number];
     parse_our_descriptor();
@@ -286,6 +380,15 @@ int main() {
 #endif
         }
         tud_task();
+        if (!device_side_connected) {
+            uint8_t mouse_dev_addr = 0;
+            if (find_relative_mouse_dev_addr(&mouse_dev_addr)) {
+                if (mirror_mouse_identity(mouse_dev_addr)) {
+                    tud_connect();
+                    device_side_connected = true;
+                }
+            }
+        }
         if (boot_protocol_updated) {
             parse_our_descriptor();
             boot_protocol_updated = false;
